@@ -52,6 +52,7 @@
 #include <vm/vm_user.h>
 #include <vm/pmap.h>
 #include <device/device_port.h>
+#include <device/ramdisk.h>
 
 #if	MACH_KDB
 #include <machine/db_machdep.h>
@@ -65,7 +66,6 @@
 #include <oskit/c/stdio.h>
 #define safe_gets(s, n) fgets((s),(n),stdin)
 #else
-#include <mach/machine/multiboot.h>
 #include <mach/exec/exec.h>
 #ifdef	MACH_XEN
 #include <mach/xen.h>
@@ -124,204 +124,79 @@ free_bootstrap_pages(phys_addr_t start, phys_addr_t end)
 
 void bootstrap_create(void)
 {
-  int compat;
-  unsigned n = 0;
-#ifdef	MACH_XEN
-#ifdef __x86_64__ // 32_ON_64 actually
-  struct multiboot32_module *bmods32 = (struct multiboot32_module *)
-                                       boot_info.mod_start;
-  struct multiboot_module *bmods;
-  if (bmods32) {
-    int i;
-    for (n = 0; bmods32[n].mod_start; n++)
-      ;
-    bmods = alloca(n * sizeof(*bmods));
-    for (i = 0; i < n ; i++)
-    {
-      bmods[i].mod_start = kvtophys(bmods32[i].mod_start + (vm_offset_t) bmods32);
-      bmods[i].mod_end = kvtophys(bmods32[i].mod_end + (vm_offset_t) bmods32);
-      bmods[i].string = kvtophys(bmods32[i].string + (vm_offset_t) bmods32);
-    }
-  }
-#else
-  struct multiboot_module *bmods = (struct multiboot_module *)
-                                   boot_info.mod_start;
-  if (bmods)
-    for (n = 0; bmods[n].mod_start; n++) {
-      bmods[n].mod_start = kvtophys(bmods[n].mod_start + (vm_offset_t) bmods);
-      bmods[n].mod_end = kvtophys(bmods[n].mod_end + (vm_offset_t) bmods);
-      bmods[n].string = kvtophys(bmods[n].string + (vm_offset_t) bmods);
-    }
-#endif
-  boot_info.mods_count = n;
-  boot_info.flags |= MULTIBOOT_MODS;
-#else	/* MACH_XEN */
-#ifdef __x86_64__
-  struct multiboot_raw_module *bmods32 = ((struct multiboot_raw_module *)
-                                          phystokv(boot_info.mods_addr));
-  struct multiboot_module *bmods=NULL;
-  if (bmods32)
-    {
-      int i;
-      bmods = alloca(boot_info.mods_count * sizeof(*bmods));
-      for (i=0; i<boot_info.mods_count; i++)
-        {
-          bmods[i].mod_start = bmods32[i].mod_start;
-          bmods[i].mod_end = bmods32[i].mod_end;
-          bmods[i].string = bmods32[i].string;
-        }
-    }
-#else
-  struct multiboot_module *bmods = ((struct multiboot_module *)
-				    phystokv(boot_info.mods_addr));
-#endif
-#endif	/* MACH_XEN */
-  if (!(boot_info.flags & MULTIBOOT_MODS)
-      || (boot_info.mods_count == 0))
-    panic ("No bootstrap code loaded with the kernel!");
 
-  compat = boot_info.mods_count == 1;
-  if (compat)
-    {
-      char *p = strchr((char*)phystokv(bmods[0].string), ' ');
-      if (p != 0)
-	do
-	  ++p;
-	while (*p == ' ' || *p == '\n');
-      compat = p == 0 || *p == '\0';
-    }
+  unsigned i;
+  int losers;
 
-  if (compat)
-    {
-      printf("Loading single multiboot module in compat mode: %s\n",
-	     (char*)phystokv(bmods[0].string));
-      bootstrap_exec_compat(&bmods[0]);
-    }
-  else
-    {
-      unsigned i;
-      int losers;
-
-      /* Initialize boot script variables.  We leak these send rights.  */
-      losers = boot_script_set_variable
+  /* Initialize boot script variables.  We leak these send rights.  */
+  losers = boot_script_set_variable
 	("host-port", VAL_PORT,
 	 (long) realhost.host_priv_self);
-      if (losers)
-	panic ("cannot set boot-script variable host-port: %s",
-	       boot_script_error_string (losers));
-      losers = boot_script_set_variable
+  if (losers)
+    panic ("cannot set boot-script variable host-port: %s",
+	   boot_script_error_string (losers));
+  losers = boot_script_set_variable
 	("device-port", VAL_PORT,
 	 (long) master_device_port);
-      if (losers)
-	panic ("cannot set boot-script variable device-port: %s",
-	       boot_script_error_string (losers));
-      losers = boot_script_set_variable
+  if (losers)
+    panic ("cannot set boot-script variable device-port: %s",
+      boot_script_error_string (losers));
+  losers = boot_script_set_variable
 	("kernel-task", VAL_PORT,
 	 (long) kernel_task->itk_self);
-      if (losers)
-	panic ("cannot set boot-script variable kernel-task: %s",
-	       boot_script_error_string (losers));
+  if (losers)
+    panic ("cannot set boot-script variable kernel-task: %s",
+	   boot_script_error_string (losers));
 
-      losers = boot_script_set_variable ("kernel-command-line", VAL_STR,
-					 (long) kernel_cmdline);
+  losers = boot_script_set_variable ("kernel-command-line", VAL_STR,
+				     (long) kernel_cmdline);
+  if (losers)
+    panic ("cannot set boot-script variable %s: %s",
+	   "kernel-command-line", boot_script_error_string (losers));
+
+  /* Set the same boot script variables that the old Hurd's
+     serverboot did, so an old Hurd and boot script previously
+     used with serverboot can be used directly with this kernel.  */
+
+  char *flag_string = alloca(1024);
+  char *root_string = alloca(1024);
+
+  /*
+   * Get the (compatibility) boot flags and root name strings.
+   */
+  get_compat_strings(flag_string, root_string);
+
+  losers = boot_script_set_variable ("boot-args", VAL_STR,
+				     (long) flag_string);
+  if (losers)
+    panic ("cannot set boot-script variable %s: %s",
+	   "boot-args", boot_script_error_string (losers));
+  losers = boot_script_set_variable ("root-device", VAL_STR,
+				     (long) root_string);
+  if (losers)
+    panic ("cannot set boot-script variable %s: %s",
+	   "root-device", boot_script_error_string (losers));
+
+  /* Turn each `FOO=BAR' word in the command line into a boot script
+     variable ${FOO} with value BAR.  This matches what we get from
+     oskit's environ in the oskit-mach case (above).  */
+
+  int len = strlen (kernel_cmdline) + 1;
+  char *s = memcpy (alloca (len), kernel_cmdline, len);
+  char *word;
+  while ((word = strsep (&s, " \t")) != 0)
+    {
+      char *eq = strchr (word, '=');
+      if (eq == 0)
+	continue;
+      *eq++ = '\0';
+      losers = boot_script_set_variable (word, VAL_STR, (long) eq);
       if (losers)
 	panic ("cannot set boot-script variable %s: %s",
-	       "kernel-command-line", boot_script_error_string (losers));
-
-      {
-	/* Set the same boot script variables that the old Hurd's
-	   serverboot did, so an old Hurd and boot script previously
-	   used with serverboot can be used directly with this kernel.  */
-
-	char *flag_string = alloca(1024);
-	char *root_string = alloca(1024);
-
-	/*
-	 * Get the (compatibility) boot flags and root name strings.
-	 */
-	get_compat_strings(flag_string, root_string);
-
-	losers = boot_script_set_variable ("boot-args", VAL_STR,
-					   (long) flag_string);
-	if (losers)
-	  panic ("cannot set boot-script variable %s: %s",
-		 "boot-args", boot_script_error_string (losers));
-	losers = boot_script_set_variable ("root-device", VAL_STR,
-					   (long) root_string);
-	if (losers)
-	  panic ("cannot set boot-script variable %s: %s",
-		 "root-device", boot_script_error_string (losers));
-      }
-
-#if OSKIT_MACH
-      {
-	/* The oskit's "environ" array contains all the words from
-	   the multiboot command line that looked like VAR=VAL.
-	   We set each of these as boot-script variables, which
-	   can be used for things like ${root}.  */
-
-	extern char **environ;
-	char **ep;
-	for (ep = environ; *ep != 0; ++ep)
-	  {
-	    size_t len = strlen (*ep) + 1;
-	    char *var = memcpy (alloca (len), *ep, len);
-	    char *val = strchr (var, '=');
-	    *val++ = '\0';
-	    losers = boot_script_set_variable (var, VAL_STR, (long) val);
-	    if (losers)
-	      panic ("cannot set boot-script variable %s: %s",
-		     var, boot_script_error_string (losers));
-	  }
-      }
-#else  /* GNUmach, not oskit-mach */
-      {
-	/* Turn each `FOO=BAR' word in the command line into a boot script
-	   variable ${FOO} with value BAR.  This matches what we get from
-	   oskit's environ in the oskit-mach case (above).  */
-
-	int len = strlen (kernel_cmdline) + 1;
-	char *s = memcpy (alloca (len), kernel_cmdline, len);
-	char *word;
-	while ((word = strsep (&s, " \t")) != 0)
-	  {
-	    char *eq = strchr (word, '=');
-	    if (eq == 0)
-	      continue;
-	    *eq++ = '\0';
-	    losers = boot_script_set_variable (word, VAL_STR, (long) eq);
-	    if (losers)
-	      panic ("cannot set boot-script variable %s: %s",
-		     word, boot_script_error_string (losers));
-	  }
-      }
-#endif
-
-      for (i = 0; i < boot_info.mods_count; ++i)
-	{
-	  int err;
-	  char *line = (char*)phystokv(bmods[i].string);
-	  printf ("module %d: %s\n", i, line);
-	  err = boot_script_parse_line (&bmods[i], line);
-	  if (err)
-	    {
-	      printf ("\n\tERROR: %s", boot_script_error_string (err));
-	      ++losers;
-	    }
-	}
-      printf ("%d multiboot modules\n", i);
-      if (losers)
-	panic ("%d of %d boot script commands could not be parsed",
-	       losers, boot_info.mods_count);
-      losers = boot_script_exec ();
-      if (losers)
-	panic ("ERROR in executing boot script: %s",
-	       boot_script_error_string (losers));
+	       word, boot_script_error_string (losers));
     }
-  /* XXX we could free the memory used
-     by the boot loader's descriptors and such.  */
-  for (n = 0; n < boot_info.mods_count; n++)
-    free_bootstrap_pages(bmods[n].mod_start, bmods[n].mod_end);
+
+  machine_exec_boot_script ();
 }
 
 static void
@@ -469,7 +344,7 @@ static int
 boot_read(void *handle, vm_offset_t file_ofs, void *buf, vm_size_t size,
 	  vm_size_t *out_actual)
 {
-  struct multiboot_module *mod = handle;
+  struct bootstrap_module *mod = handle;
 
   if (mod->mod_start + file_ofs + size > mod->mod_end)
     return -1;
@@ -484,7 +359,7 @@ read_exec(void *handle, vm_offset_t file_ofs, vm_size_t file_size,
 		     vm_offset_t mem_addr, vm_size_t mem_size,
 		     exec_sectype_t sec_type)
 {
-  struct multiboot_module *mod = handle;
+  struct bootstrap_module *mod = handle;
 
 	vm_map_t user_map = current_task()->map;
 	vm_offset_t start_page, end_page;
@@ -755,7 +630,7 @@ $0 ${boot-args} ${host-port} ${device-port} ${root-device} $(task-create) $(task
 
 struct user_bootstrap_info
 {
-  struct multiboot_module *mod;
+  struct bootstrap_module *mod;
   char **argv;
   int done;
   decl_simple_lock_data(,lock)
@@ -765,7 +640,7 @@ int
 boot_script_exec_cmd (void *hook, task_t task, char *path, int argc,
 		      char **argv, char *strings, int stringlen)
 {
-  struct multiboot_module *mod = hook;
+  struct bootstrap_module *mod = hook;
 
   int err;
 
@@ -848,6 +723,23 @@ void
 boot_script_free (void *ptr, unsigned int size)
 {
   kfree ((vm_offset_t)ptr, size);
+}
+
+int
+boot_script_ramdisk_create (struct cmd *cmd, char **name)
+{
+  struct bootstrap_module *mod = cmd->hook;
+  vm_size_t size = mod->mod_end - mod->mod_start;
+  kern_return_t rc;
+  int no;
+
+  rc = ramdisk_create (size, (void *) phystokv (mod->mod_start), &no);
+  if (rc != KERN_SUCCESS)
+    return BOOT_SCRIPT_MACH_ERROR;
+
+  *name = boot_script_malloc (RAMDISK_NAMESZ);
+  sprintf(*name, RAMDISK_NAME "%d", no);
+  return 0;
 }
 
 int

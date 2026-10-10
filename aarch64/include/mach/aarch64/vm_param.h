@@ -21,6 +21,10 @@
 
 #include <mach/machine/vm_types.h>
 
+#ifdef KERNEL
+#include "aarch64/vm_param.h"
+#endif
+
 #define BYTE_SIZE		8	/* byte size in bits */
 
 /*
