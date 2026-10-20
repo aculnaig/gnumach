@@ -34,8 +34,9 @@ io_return_t irqgetstat(
 
   switch (flavor)
     {
-#ifndef MACH_XEN
+#if  !defined(MACH_XEN) && (defined(i386) || defined(__i386__))
       case IRQGETPICMODE:
+        extern int pic_mode;
         *data = pic_mode;
         *count = 1;
         break;

@@ -101,3 +101,17 @@ void cnt_init(dtb_node_t node)
 		}
 	}
 }
+
+uint32_t hpclock_read_counter(void)
+{
+	uint64_t cntpct_el0 = 0;
+	asm volatile("mrs %0, CNTPCT_EL0" : "=r" (cntpct_el0));
+
+	return (uint32_t) cntpct_el0;
+}
+
+uint32_t hpclock_get_counter_period_nsec(void)
+{
+	uint64_t freq = cnt_freq ? cnt_freq : 1;
+	return (uint32_t) (1000000000ULL / freq);
+}
