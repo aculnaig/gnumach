@@ -357,8 +357,9 @@ static uint64_t read_cells(
 		case 1:
 			return be32toh(*(const dtb_uint32_t *) addr);
 		case 2:
-			__builtin_memcpy(&tmp, addr, 8);
-			return __builtin_bswap64(tmp);
+			uint32_t high = be32toh(*(const dtb_uint32_t *) addr);
+			uint32_t low  = be32toh(*(const dtb_uint32_t *) ((const char *)addr + 4));
+			return ((uint64_t)high << 32) | low;
 		default:
 			panic("Unimplemented cell size: %d\n", size);
 	}
