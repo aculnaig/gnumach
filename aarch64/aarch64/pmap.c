@@ -268,6 +268,17 @@ _Static_assert((1UL << VM_AARCH64_T1SZ) + VM_MIN_KERNEL_ADDRESS == 0UL);
 #define NEXT_SB(sb)		(((sb) - PAGE_SHIFT - 1) / BITS_PER_LEVEL * BITS_PER_LEVEL + PAGE_SHIFT)
 #define TT_INDEX(v, sb, nsb)	(((v) >> (nsb)) & ((1UL << ((sb) - (nsb))) - 1))
 
+// PARange table
+static const unsigned int parange_table[] = {
+	[0] = 32,
+	[1] = 36,
+	[2] = 40,
+	[3] = 42,
+	[4] = 44,
+	[5] = 48,
+	[6] = 52
+};
+
 /*
  *	Bootstrap the system enough to run with virtual memory.
  *	Allocate the kernel page translation tables,
@@ -276,13 +287,41 @@ _Static_assert((1UL << VM_AARCH64_T1SZ) + VM_MIN_KERNEL_ADDRESS == 0UL);
  */
 void __attribute__((target("branch-protection=none"))) pmap_bootstrap(void)
 {
-#if (VM_AARCH64_T0SZ != 48) || (VM_AARCH64_T1SZ != 48)
-#error "Rework the logic below"
-#endif
+	// Check that we are running in EL1, as expected.  If not, panic.
+	unsigned long current_el;
+	asm volatile("mrs %0, CurrentEL" : "=r"(current_el));
+	current_el = (current_el >> 2) & 0x3;
+
+	if (current_el != 1) {
+		panic("pmap_bootstrap: not running in EL1. CurrentEL: %lu", current_el);
+	}
+
+	// Read ID_AA64MMFR0_EL1 to check the maximum supported translation size for TTBR0 and TTBR1. If not 48 bits, panic.
+	unsigned long mmfr0;
+	asm volatile("mrs %0, ID_AA64MMFR0_EL1" : "=r"(mmfr0));
+
+	// Check if PARange field (bits 0-3) is 0b0101, which indicates 48 bits. If not, panic.
+	unsigned long parange = mmfr0 & 0xF;
+	unsigned int pa_bits = (parange < (sizeof(parange_table) / sizeof(parange_table[0]))) ? parange_table[parange] : 0;
+
+	if (pa_bits == 0) {
+		panic("pmap_bootstrap: PARange unknown value: %u", parange);
+	}
+
+	// Verify if the physical memory installed is included in the PARange of the CPU
+	phys_addr_t max_phys_addr = phys_mem_start + phys_mem_size;
+	if (pa_bits < 64 && max_phys_addr > (1ULL << pa_bits)) {
+		panic("pmap_bootstrap: physical RAM (0x%lx) surpass the PARange of the CPU (%u bit)", (unsigned long)max_phys_addr, pa_bits);
+	}
+
+	// Limit IPS to 48-bit because AARCH64_PTE_ADDR_MASK = 48-bit (without FEAT_LPA2)
+	unsigned int tcr_ips = (parange > 5) ? 5 : parange;
+
 	phys_addr_t	kernel_block_t0_l1;
 	unsigned long	kernel_block_t0_l1_index;
 	phys_addr_t	kernel_block_t1_l1;
 	unsigned long	kernel_block_t1_l1_index;
+	unsigned long 	phys_mem_l1_index;
 
 	uint64_t	sctlr;
 	uintptr_t	scratch1, scratch2;
@@ -328,7 +367,11 @@ void __attribute__((target("branch-protection=none"))) pmap_bootstrap(void)
 		| AARCH64_PTE_UXN
 		| kernel_mapping_bti
 		| AARCH64_PTE_NON_SH /* ? */;
-	phys_ttbr0_l1_base[kernel_block_t0_l1_index] = kernel_block_t0_l1
+
+	/* Calculate the correct L1 index for physical memory based on phys_mem_start */
+	phys_mem_l1_index = TT_INDEX(phys_mem_start, 39, 30);
+
+	phys_ttbr0_l1_base[phys_mem_l1_index] = phys_mem_start
 		| AARCH64_PTE_MAIR_INDEX(MAIR_NORMAL_INDEX)
 		| AARCH64_PTE_ACCESS
 		| AARCH64_PTE_BLOCK
@@ -340,7 +383,7 @@ void __attribute__((target("branch-protection=none"))) pmap_bootstrap(void)
 	/* The upper map.  */
 	memset(phys_ttbr1_l0_base, 0, PAGE_SIZE);
 	memset(phys_ttbr1_l1_base, 0, PAGE_SIZE);
-	/* TODO: This assumes that physical memory is in the first block.  */
+
 	phys_ttbr1_l0_base[0] = (phys_addr_t) phys_ttbr1_l1_base
 		| AARCH64_PTE_MAIR_INDEX(MAIR_NORMAL_INDEX)
 		| AARCH64_PTE_ACCESS
@@ -348,15 +391,21 @@ void __attribute__((target("branch-protection=none"))) pmap_bootstrap(void)
 		| AARCH64_PTE_VALID
 		| AARCH64_PTE_UXN
 		| AARCH64_PTE_NON_SH /* ? */;
-	phys_ttbr1_l1_base[0] = 0x0
+
+	/* Map physical memory dinamically starting from phys_mem_start instead of 0x0 */
+	phys_ttbr1_l1_base[phys_mem_l1_index] = phys_mem_start
 		| AARCH64_PTE_MAIR_INDEX(MAIR_NORMAL_INDEX)
 		| AARCH64_PTE_ACCESS
 		| AARCH64_PTE_BLOCK
 		| AARCH64_PTE_VALID
 		| AARCH64_PTE_UXN
-		| AARCH64_PTE_PXN
+		/* | AARCH64_PTE_PXN removed so EL1 can execute kernel code here */
 		| AARCH64_PTE_NON_SH /* ? */;
-	/* FIXME: MAIR device index... */
+
+	/* Map kernel code and data using Normal Memory attributes */
+	/* TODO: When implementing MMIO device mapping (e.g. GIC, UART, Virtio)
+	 * 		 allocate a dedicated page table entries using MAIR_DEVICE_INDEX
+	 */
 	phys_ttbr1_l1_base[kernel_block_t1_l1_index] = kernel_block_t1_l1
 		| AARCH64_PTE_MAIR_INDEX(MAIR_NORMAL_INDEX)
 		| AARCH64_PTE_ACCESS
@@ -384,7 +433,8 @@ void __attribute__((target("branch-protection=none"))) pmap_bootstrap(void)
 
 	/* Enable the MMU.  */
 	asm volatile("msr MAIR_EL1, %0" :: "r"(MAIR_VALUE));
-	asm volatile("msr TCR_EL1, %0" :: "r"(TCR_VALUE));
+	uint64_t tcr = TCR_VALUE | TCR_IPS(tcr_ips);
+	asm volatile("msr TCR_EL1, %0" :: "r"(tcr));
 	asm volatile("msr TTBR0_EL1, %0" :: "r"(phys_ttbr0_l0_base));
 	asm volatile("msr TTBR1_EL1, %0" :: "r"(phys_ttbr1_l0_base));
 	asm volatile(
@@ -396,6 +446,8 @@ void __attribute__((target("branch-protection=none"))) pmap_bootstrap(void)
 		"mov %[scratch1], #%[min_addr]\n\t"
 		"add sp, sp, %[scratch1]\n\t"
 		"add x29, x29, %[scratch1]\n\t"
+		/* Also adjust x30 (Link Register) to high memory so 'ret' works */
+		"add x30, x30, %[scratch1]\n\t"
 		/* Jump to high memory.  */
 		"adr %[scratch2], .here\n\t"
 		"add %[scratch2], %[scratch2], %[scratch1]\n\t"
@@ -409,12 +461,6 @@ void __attribute__((target("branch-protection=none"))) pmap_bootstrap(void)
 		"add %[scratch2], %[scratch2], %[scratch1]\n\t"
 		"add x30, x30, %[scratch1]\n\t"
 		"stp %[scratch2], x30, [x29]\n\t"
-		/*
-		 *	Unload the identity mapping, just to make
-		 *	sure we crash if anything still references it.
-		 */
-		"mov %[scratch2], #-1\n\t"
-		"msr TTBR0_EL1, %[scratch2]"
 		:
 		[scratch1] "=&r"(scratch1),
 		[scratch2] "=&r"(scratch2)

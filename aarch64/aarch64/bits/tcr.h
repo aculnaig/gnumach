@@ -15,4 +15,7 @@
 
 #define TCR_VALUE		(TCR_T0SZ(VM_AARCH64_T0SZ) | TCR_TG0_4K | TCR_T1SZ(VM_AARCH64_T1SZ) | TCR_TG1_4K)
 
+#define TCR_IPS_SHIFT   32
+#define TCR_IPS(ips)    (((uint64_t)(ips) & 0x7UL) << TCR_IPS_SHIFT)
+
 #endif /* _AARCH64_BITS_TCR_ */

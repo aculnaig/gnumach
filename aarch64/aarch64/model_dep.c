@@ -118,23 +118,32 @@ static void apply_runtime_relocations(void)
 	extern const char	__text_start;
 
 	const Elf64_Rela	*rela;
+	const Elf64_Rela	*rela_end;
 	Elf64_Addr		*addr;
 	Elf64_Addr		slide;
 
-	/* TODO: This assumes we're linked at base address 0x0.  */
-	slide = (Elf64_Addr) &__text_start;
+	/* Compute silde = address of __text_start */
+	asm volatile ("adr %0, __text_start" : "=r"(slide));
 
-	for (rela = &__rela_start; rela != &__rela_end; rela++) {
-		switch (rela->r_info) {
-			case R_AARCH64_NONE:
-				/* Nothing to do.  */
-				break;
-			case R_AARCH64_RELATIVE:
-				addr = (Elf64_Addr *)(slide + rela->r_offset);
-				*addr = slide + rela->r_addend;
-				break;
-			default:
-				panic("Unimplemented relocation type\n");
+	/* Obtain relocation table boundaries */
+	asm volatile ("adr %0, __rela_start" : "=r"(rela));
+	asm volatile ("adr %0, __rela_end"   : "=r"(rela_end));
+
+	for (; rela != rela_end; rela++) {
+		switch (rela->r_info & 0xffffffff) {
+		case R_AARCH64_NONE:
+			/* Nothing to do. */
+			break;
+		case R_AARCH64_RELATIVE:
+			addr = (Elf64_Addr *)(slide + rela->r_offset);
+			if ((uintptr_t)addr & 7) {
+				panic("apply_runtime_relocations(): unaligned relocation at %p (offset 0x%lx)",
+					addr, (unsigned long)rela->r_offset);
+			}
+			*addr = slide + rela->r_addend;
+			break;
+		default:
+			panic("Unimplemented relocation type\n");
 		}
 	}
 }
@@ -300,19 +309,39 @@ void __attribute__((noreturn)) c_boot_entry(dtb_t dtb)
 
 	hwcaps_init();
 	early_dtb_walk();
-	pmap_bootstrap();
+
 	/*
-	 *	Now running with MMU from highmem, re-load things.
+	 * 1. Early bootstrap - identity-map the low N GB and enable the MMU.
 	 */
-	asm volatile("" ::: "memory");
+	pmap_bootstrap();
+
+	/*
+	 * 2. The kernel is now executing the MMU enabled in the high-memory
+	 *    region (VA aka 0xFFFF0000...). Before we can touch any data that lives
+	 *    in that region (relocation tables, GOT, etc.) we must map it.
+	 * 
+	 *    `pmap_bootstrap_misc()` installs the remaining kernel page tables,
+	 *    and `load_exception_vector_table()` installs the vector table needed
+	 *    for exception handling while relocations are applied.
+	 */
+	asm volatile("" ::: "memory"); /* Full barrier - ensure MMU state is visible */
+	pmap_bootstrap_misc();
+	load_exception_vector_table();
+
+	/* 3. Apply the runtime relocations **after** the high-half is mapped.
+	 *	  `apply_runtime_relocations()` now uses PC-relative `adr` to obtain
+	 *    the addresses of `__rela_start`, `__rela_end` and `__text_start`,
+	 *    so it works even before the GOT is relocated.
+	 */
 	apply_runtime_relocations();
 
+	/* 4. The device-tree blob (DTB) is still in low physical memory;
+     *    convert it to a kernel virtual address and reload it now that the kernel
+	 *    address space is fully functional.
+	 */
 	dtb = (dtb_t) phystokv(dtb);
 	kr = dtb_load(dtb);
 	assert(kr == KERN_SUCCESS);
-
-	pmap_bootstrap_misc();
-	load_exception_vector_table();
 
 	/*
 	 *	We should be able to use kmsg/cnputc now, even though
