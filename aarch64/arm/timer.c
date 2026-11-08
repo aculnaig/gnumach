@@ -26,22 +26,28 @@
 #include <string.h>
 
 static unsigned cnt_freq;			/* frequency, timer ticks per second */
-static volatile unsigned long long cnt_pct;
 
 static void set_up_next_interrupt(void)
 {
+	uint64_t current_pct = percpu_get(uint64_t, cnt_pct);
+	uint64_t next_target = current_pct + (cnt_freq / HZ);
+
 	asm volatile(
 		"msr	CNTP_CVAL_EL0, %0"
-		:: "r"(cnt_pct + cnt_freq / HZ));
+		:: "r"(next_target));
 }
 
 void startrtclock(void)
 {
+	uint64_t initial_pct;
+
 	asm(
 		"mrs	%0, CNTFRQ_EL0\n\t"
 		"mrs	%1, CNTPCT_EL0"
-		: "=r"(cnt_freq), "=r"(cnt_pct));
+		: "=r"(cnt_freq), "=r"(initial_pct));
 	assert(cnt_freq > 10);
+
+	percpu_assign(cnt_pct, initial_pct);
 
 	asm volatile(
 		"msr	CNTP_CTL_EL0, %0"
@@ -53,7 +59,8 @@ void startrtclock(void)
 
 static void cnt_handle_irq(struct irq_src *)
 {
-	unsigned long	last_pct = cnt_pct;
+	uint64_t last_pct = percpu_get(uint64_t, cnt_pct);
+	uint64_t new_pct;
 	unsigned int	usec;
 	boolean_t	from_el0;
 

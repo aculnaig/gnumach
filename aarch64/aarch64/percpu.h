@@ -30,6 +30,9 @@ struct percpu {
 	boolean_t		in_irq_from_el0 : 1;
 	thread_t		fpu_thread;
 	pmap_mapwindow_t	mapwindows[PMAP_NMAPWINDOWS];
+
+	/* Last value of cnt_pct per core */
+	uint64_t        cnt_pct;
 /*
     struct machine_slot	machine_slot;
     ast_t		need_ast;
