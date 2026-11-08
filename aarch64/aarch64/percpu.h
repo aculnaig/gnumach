@@ -19,28 +19,9 @@
 #ifndef _AARCH64_PERCPU_
 #define _AARCH64_PERCPU_
 
-
-struct percpu;
-
-#if NCPUS > 1
-static inline __attribute__((const)) struct percpu *_my_percpu(void)
-{
-	struct percpu	*p;
-
-	asm("mrs %0, TPIDR_EL1" : "=r"(p));
-	return p;
-}
-#else
-#define _my_percpu()			(&percpu_array[0])
-#endif
-
-#define percpu_assign(stm, val)		_my_percpu()->stm = (val)
-#define percpu_get(typ, stm)		(_my_percpu()->stm)
-#define percpu_ptr(type, stm)		(&_my_percpu()->stm)
-
-#include <kern/processor.h>
 #include <kern/kern_types.h>
 #include "aarch64/pmap.h"
+#include <kern/processor.h>
 
 struct percpu {
 	struct processor	processor;
@@ -62,6 +43,34 @@ struct percpu {
 };
 
 extern struct percpu percpu_array[NCPUS];
+
+#if NCPUS > 1
+static inline __attribute__((const)) struct percpu *_my_percpu(void)
+{
+	struct percpu	*p;
+
+	asm("mrs %0, TPIDR_EL1" : "=r"(p));
+	return p;
+}
+#else
+static inline __attribute__((const)) struct percpu *_my_percpu(void)
+{
+	unsigned long sctlr;
+
+	asm volatile ("mrs %0, sctlr_el1" : "=r"(sctlr));
+
+	if ((sctlr & 0x1) == 0) {
+		__builtin_trap();
+	}
+
+	return &percpu_array[0];
+}
+#define _my_percpu() _my_percpu()
+#endif
+
+#define percpu_assign(stm, val)    _my_percpu()->stm = (val)
+#define percpu_get(typ, stm)       (_my_percpu()->stm)
+#define percpu_ptr(type, stm)      (&_my_percpu()->stm)
 
 void init_percpu(int cpu);
 
