@@ -315,8 +315,15 @@ void __attribute__((noreturn)) c_boot_entry(dtb_t dtb)
 	 */
 	pmap_bootstrap();
 
+	/* 2. Apply the runtime relocations **after** the high-half is mapped.
+	 *    `apply_runtime_relocations()` now uses PC-relative `adr` to obtain
+	 *    the addresses of `__rela_start`, `__rela_end` and `__text_start`,
+	 *    so it works even before the GOT is relocated.
+	 */
+	apply_runtime_relocations();
+
 	/*
-	 * 2. The kernel is now executing the MMU enabled in the high-memory
+	 * 3. The kernel is now executing the MMU enabled in the high-memory
 	 *    region (VA aka 0xFFFF0000...). Before we can touch any data that lives
 	 *    in that region (relocation tables, GOT, etc.) we must map it.
 	 * 
@@ -327,13 +334,6 @@ void __attribute__((noreturn)) c_boot_entry(dtb_t dtb)
 	asm volatile("" ::: "memory"); /* Full barrier - ensure MMU state is visible */
 	pmap_bootstrap_misc();
 	load_exception_vector_table();
-
-	/* 3. Apply the runtime relocations **after** the high-half is mapped.
-	 *	  `apply_runtime_relocations()` now uses PC-relative `adr` to obtain
-	 *    the addresses of `__rela_start`, `__rela_end` and `__text_start`,
-	 *    so it works even before the GOT is relocated.
-	 */
-	apply_runtime_relocations();
 
 	/* 4. The device-tree blob (DTB) is still in low physical memory;
      *    convert it to a kernel virtual address and reload it now that the kernel
