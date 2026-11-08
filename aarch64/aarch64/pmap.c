@@ -421,7 +421,8 @@ void __attribute__((target("branch-protection=none"))) pmap_bootstrap(void)
 	 *	mapped into the kernel address space,
 	 *	and extends to a stupid arbitrary limit beyond that.
 	 */
-	kernel_virtual_start = phystokv(kernel_block_t1_l1 + (1UL << NEXT_SB(36)));
+	phys_addr_t phys_mem_end_block = (phys_mem_l1_index + 1UL) << NEXT_SB(36);
+	kernel_virtual_start = phystokv(phys_mem_end_block);
 	kernel_virtual_end = kernel_virtual_start + VM_KERNEL_MAP_SIZE;
 
 	sctlr = SCTLR_M | SCTLR_SA | SCTLR_SA0 | SCTLR_UCT | SCTLR_UCI
