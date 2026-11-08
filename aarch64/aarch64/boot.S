@@ -93,8 +93,9 @@ ENTRY(_start)
 END(_start)
 
 	.bss
+	.align 4
 .boot_stack:
-	.space	4096
+	.space	4096 * 4
 .boot_stack_end:
 
 	.section .note.GNU-stack,"",%progbits
