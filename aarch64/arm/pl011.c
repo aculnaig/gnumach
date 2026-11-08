@@ -100,12 +100,19 @@ struct pl011 {
 
 #define UART_REG(uart, off, tp)		*(volatile tp *) ((uart)->base + (off))
 
-static vm_offset_t	pl011_rom_base;
-static void pl011_romputc(char c)
+vm_offset_t	pl011_rom_base;
+void pl011_romputc(char c)
 {
 	while (unlikely((*(volatile uint32_t *) (pl011_rom_base + UARTFR)) & UARTFR_TXFF))
 		cpu_pause();
+
 	*(volatile uint32_t *) (pl011_rom_base + UARTDR) = c;
+	if (c == '\n') {
+		while (unlikely((*(volatile uint32_t *) (pl011_rom_base + UARTFR)) & UARTFR_TXFF))
+			cpu_pause();
+
+		*(volatile uint32_t *) (pl011_rom_base + UARTDR) = '\r';
+	}
 }
 
 void pl011_early_init(dtb_node_t node, dtb_ranges_map_t map)

@@ -343,6 +343,15 @@ void __attribute__((noreturn)) c_boot_entry(dtb_t dtb)
 	kr = dtb_load(dtb);
 	assert(kr == KERN_SUCCESS);
 
+	/* Register serial PL011 */
+	extern vm_offset_t pl011_rom_base;
+	extern void (*romputc)(char);
+	extern void pl011_romputc(char);
+
+	/* FIXME: 0x09000000 is a physical address in QEMU virt */
+	pl011_rom_base = phystokv(0x09000000);
+	romputc = pl011_romputc;
+	
 	/*
 	 *	We should be able to use kmsg/cnputc now, even though
 	 *	it doesn't yet go anywhere.
