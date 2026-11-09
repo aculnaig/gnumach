@@ -33,6 +33,8 @@ struct percpu {
 
 	/* Last value of cnt_pct per core */
 	uint64_t        cnt_pct;
+	/* Absolute target value for the next tick from the timer */
+	uint64_t        next_event;
 /*
     struct machine_slot	machine_slot;
     ast_t		need_ast;

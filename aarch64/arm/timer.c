@@ -40,6 +40,7 @@ static void set_up_next_interrupt(void)
 void startrtclock(void)
 {
 	uint64_t initial_pct;
+	uint64_t interval;
 
 	asm(
 		"mrs	%0, CNTFRQ_EL0\n\t"
@@ -47,7 +48,16 @@ void startrtclock(void)
 		: "=r"(cnt_freq), "=r"(initial_pct));
 	assert(cnt_freq > 10);
 
+	interval = cnt_freq / HZ;
+
+	/* Initialize the per-CPU state of the current CPU */
 	percpu_assign(cnt_pct, initial_pct);
+	percpu_assign(next_event, initial_pct + interval);
+
+	asm volatile(
+		"msr	CNTP_CVAL_EL0, %0"
+		:: "r"(percpu_get(uint64_t, next_event))
+	);
 
 	asm volatile(
 		"msr	CNTP_CTL_EL0, %0"
@@ -59,16 +69,36 @@ void startrtclock(void)
 
 static void cnt_handle_irq(struct irq_src *)
 {
+	uint64_t now;
+	uint64_t interval = cnt_freq / HZ;
+	uint64_t next = percpu_get(uint64_t, next_event);
 	uint64_t last_pct = percpu_get(uint64_t, cnt_pct);
-	uint64_t new_pct;
-	unsigned int	usec;
-	boolean_t	from_el0;
+	unsigned int usec;
+	boolean_t from_el0;
 
 	asm volatile(
 		"isb\n\t"
 		"mrs	%0, CNTPCT_EL0"
-		: "=r"(cnt_pct));
-	usec = (cnt_pct - last_pct) * 1000000 / cnt_freq;
+		: "=r"(now));
+
+	/* Calculates the elapsed microseconds for Mach's statistics */
+	usec = (now - percpu_get(uint64_t, cnt_pct)) * 1000000 / cnt_freq;
+	percpu_assign(cnt_pct, now);
+
+	/* Avoid clock drift */
+	next += interval;
+
+	/* If latency has surpassed the interval, realign it */
+	if (unlikely(now >= next)) {
+		next = now + interval;
+	}
+
+	percpu_assign(next_event, next);
+
+	/* Updates the hardware comparator for the next tick */
+	asm volatile(
+		"msr	CNTP_CVAL_EL0, %0"
+		:: "r"(next));
 
 	from_el0 = percpu_get(boolean_t, in_irq_from_el0);
 	if (from_el0)
