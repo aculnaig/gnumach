@@ -152,3 +152,21 @@ uint32_t hpclock_get_counter_period_nsec(void)
 	uint64_t freq = cnt_freq ? cnt_freq : 1;
 	return (uint32_t) (1000000000ULL / freq);
 }
+
+void udelay(unsigned int usec)
+{
+	uint64_t start = hpclock_read_counter();
+	uint64_t freq = cnt_freq ? cnt_freq : 1;
+
+	/* Calculations of necessary ticks: (usec * freq) / 1_000_000 */
+	uint64_t target_ticks = ((uint64_t)usec * freq) / 1000000ULL;
+
+	while ((hpclock_read_counter() - start) < target_ticks) {
+		asm volatile("yield");
+	}
+}
+
+void mdelay(unsigned int msec)
+{
+	udelay(msec * 1000U);
+}
