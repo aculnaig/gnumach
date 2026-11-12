@@ -71,7 +71,7 @@ case $host_platform:$host_cpu in
   *:aarch64)
     ;;
   *)]
-    AC_MSG_ERROR([unsupported combination of cpu type `$host_cpu' and platform
+    AC_MSG_ERROR([unsupported combination of cpu type `$host_cpu' and platform \
       `$host_platform'.])[;;
 esac]
 AC_SUBST([host_platform])
@@ -103,6 +103,7 @@ AC_PROG_RANLIB
 AC_CHECK_TOOL([AR], [ar])
 AC_CHECK_TOOL([LD], [ld])
 AC_CHECK_TOOL([NM], [nm])
+AC_CHECK_TOOL([OBJCOPY], [objcopy])
 
 AC_CHECK_TOOL([MIG], [mig], [no])
 AC_ARG_VAR([MIG], [Path to the mig tool])

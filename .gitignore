@@ -59,3 +59,5 @@ build-aux/
 /doc/mach.toc
 /doc/mach.tp
 /doc/mach.vr
+
+*.rej

@@ -34,29 +34,37 @@
 
 #include <device/device_types.h>
 #include <mach/message.h>
+#include <mach/thread_status.h>
 
 // TODO: there is probably a better way to define these
 
+#ifdef __aarch64__
+/* https://gcc.gnu.org/bugzilla/show_bug.cgi?id=77882 */
+#define attribute_naked
+#else
+#define attribute_naked __attribute__((naked))
+#endif
+
 #define MACH_SYSCALL0(syscallid, retval, name)  \
-  retval name(void) __attribute__((naked));
+  retval name(void) attribute_naked;
 
 #define MACH_SYSCALL1(syscallid, retval, name, arg1)    \
-  retval name(arg1 a1) __attribute__((naked));
+  retval name(arg1 a1) attribute_naked;
 
 #define MACH_SYSCALL2(syscallid, retval, name, arg1, arg2)  \
-  retval name(arg1 a1, arg2 a2) __attribute__((naked));
+  retval name(arg1 a1, arg2 a2) attribute_naked;
 
 #define MACH_SYSCALL3(syscallid, retval, name, arg1, arg2, arg3)  \
-  retval name(arg1 a1, arg2 a2, arg3 a3) __attribute__((naked));
+  retval name(arg1 a1, arg2 a2, arg3 a3) attribute_naked;
 
 #define MACH_SYSCALL4(syscallid, retval, name, arg1, arg2, arg3, arg4)  \
-  retval name(arg1 a1, arg2 a2, arg3 a3, arg4 a4) __attribute__((naked));
+  retval name(arg1 a1, arg2 a2, arg3 a3, arg4 a4) attribute_naked;
 
 #define MACH_SYSCALL6(syscallid, retval, name, arg1, arg2, arg3, arg4, arg5, arg6)  \
-  retval name(arg1 a1, arg2 a2, arg3 a3, arg4 a4, arg5 a5, arg6 a6) __attribute__((naked));
+  retval name(arg1 a1, arg2 a2, arg3 a3, arg4 a4, arg5 a5, arg6 a6) attribute_naked;
 
 #define MACH_SYSCALL7(syscallid, retval, name, arg1, arg2, arg3, arg4, arg5, arg6, arg7) \
-  retval name(arg1 a1, arg2 a2, arg3 a3, arg4 a4, arg5 a5, arg6 a6, arg7 a7) __attribute__((naked));
+  retval name(arg1 a1, arg2 a2, arg3 a3, arg4 a4, arg5 a5, arg6 a6, arg7 a7) attribute_naked;
 
 #define mach_msg mach_msg_trap
 
@@ -70,7 +78,7 @@ MACH_SYSCALL4(65, kern_return_t, syscall_vm_allocate, mach_port_t, vm_offset_t*,
 MACH_SYSCALL3(66, kern_return_t, syscall_vm_deallocate, mach_port_t, vm_offset_t, vm_size_t)
 MACH_SYSCALL3(72, kern_return_t, syscall_mach_port_allocate, mach_port_t, mach_port_right_t, mach_port_t*)
 MACH_SYSCALL2(73, kern_return_t, syscall_mach_port_deallocate, mach_port_t, mach_port_t)
-MACH_SYSCALL3(77, kern_return_t, thread_set_self_state, int, natural_t *, natural_t)
+MACH_SYSCALL3(77, kern_return_t, thread_set_self_state, int, thread_state_t, natural_t)
 
 /*
   todo: swtch_pri swtch ...

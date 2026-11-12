@@ -1,0 +1,172 @@
+/*
+ * Copyright (c) 2024 Free Software Foundation.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ */
+
+#include "arm/timer.h"
+#include "aarch64/irq.h"
+#include "aarch64/percpu.h"
+#include "aarch64/mach_param.h" /* HZ */
+#include <kern/thread.h>
+#include <kern/assert.h>
+#include <kern/mach_clock.h>
+#include <string.h>
+
+static unsigned cnt_freq;			/* frequency, timer ticks per second */
+
+static void set_up_next_interrupt(void)
+{
+	uint64_t current_pct = percpu_get(uint64_t, cnt_pct);
+	uint64_t next_target = current_pct + (cnt_freq / HZ);
+
+	asm volatile(
+		"msr	CNTP_CVAL_EL0, %0"
+		:: "r"(next_target));
+}
+
+void startrtclock(void)
+{
+	uint64_t initial_pct;
+	uint64_t interval;
+
+	asm(
+		"mrs	%0, CNTFRQ_EL0\n\t"
+		"mrs	%1, CNTPCT_EL0"
+		: "=r"(cnt_freq), "=r"(initial_pct));
+	assert(cnt_freq > 10);
+
+	interval = cnt_freq / HZ;
+
+	/* Initialize the per-CPU state of the current CPU */
+	percpu_assign(cnt_pct, initial_pct);
+	percpu_assign(next_event, initial_pct + interval);
+
+	asm volatile(
+		"msr	CNTP_CVAL_EL0, %0"
+		:: "r"(percpu_get(uint64_t, next_event))
+	);
+
+	asm volatile(
+		"msr	CNTP_CTL_EL0, %0"
+		:: "r"(1)
+	);
+
+	set_up_next_interrupt();
+}
+
+static void cnt_handle_irq(struct irq_src *)
+{
+	uint64_t now;
+	uint64_t interval = cnt_freq / HZ;
+	uint64_t next = percpu_get(uint64_t, next_event);
+	uint64_t last_pct = percpu_get(uint64_t, cnt_pct);
+	unsigned int usec;
+	boolean_t from_el0;
+
+	asm volatile(
+		"isb\n\t"
+		"mrs	%0, CNTPCT_EL0"
+		: "=r"(now));
+
+	/* Calculates the elapsed microseconds for Mach's statistics */
+	usec = (now - percpu_get(uint64_t, cnt_pct)) * 1000000 / cnt_freq;
+	percpu_assign(cnt_pct, now);
+
+	/* Avoid clock drift */
+	next += interval;
+
+	/* If latency has surpassed the interval, realign it */
+	if (unlikely(now >= next)) {
+		next = now + interval;
+	}
+
+	percpu_assign(next_event, next);
+
+	/* Updates the hardware comparator for the next tick */
+	asm volatile(
+		"msr	CNTP_CVAL_EL0, %0"
+		:: "r"(next));
+
+	from_el0 = percpu_get(boolean_t, in_irq_from_el0);
+	if (from_el0)
+		clock_interrupt(usec, TRUE, TRUE, current_thread()->pcb->ats.pc);
+	else
+		clock_interrupt(usec, FALSE, TRUE, 0);
+
+	set_up_next_interrupt();
+}
+
+void cnt_set_interrupt_parent(dtb_node_t node, struct irq_ctlr *ctlr)
+{
+	struct dtb_prop		prop;
+	struct irq_desc_dt	desc;
+	static struct irq_src	src;
+
+	prop = dtb_node_find_prop(node, "interrupts");
+	assert(!DTB_IS_SENTINEL(prop));
+
+	desc.type = IRQ_DESC_TYPE_DT;
+	desc.prop = &prop;
+
+	src.handle_irq = cnt_handle_irq;
+	ctlr->add_src(ctlr, &src, (struct irq_desc *) &desc);
+}
+
+void cnt_init(dtb_node_t node)
+{
+	struct dtb_prop	prop;
+
+	asm("mrs %0, CNTFRQ_EL0" : "=r"(cnt_freq));
+
+	dtb_for_each_prop (*node, prop) {
+		if (!strcmp(prop.name, "clock-frequency")) {
+			vm_offset_t	off = 0;
+			cnt_freq = dtb_prop_read_cells(&prop, 1, &off);
+		}
+	}
+}
+
+uint32_t hpclock_read_counter(void)
+{
+	uint64_t cntpct_el0 = 0;
+	asm volatile("mrs %0, CNTPCT_EL0" : "=r" (cntpct_el0));
+
+	return (uint32_t) cntpct_el0;
+}
+
+uint32_t hpclock_get_counter_period_nsec(void)
+{
+	uint64_t freq = cnt_freq ? cnt_freq : 1;
+	return (uint32_t) (1000000000ULL / freq);
+}
+
+void udelay(unsigned int usec)
+{
+	uint64_t start = hpclock_read_counter();
+	uint64_t freq = cnt_freq ? cnt_freq : 1;
+
+	/* Calculations of necessary ticks: (usec * freq) / 1_000_000 */
+	uint64_t target_ticks = ((uint64_t)usec * freq) / 1000000ULL;
+
+	while ((hpclock_read_counter() - start) < target_ticks) {
+		asm volatile("yield");
+	}
+}
+
+void mdelay(unsigned int msec)
+{
+	udelay(msec * 1000U);
+}
